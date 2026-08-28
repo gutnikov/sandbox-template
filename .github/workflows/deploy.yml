@@ -1,0 +1,54 @@
+# Сборка и публикация образа сэндбокса.
+#
+# Секретов здесь нет и не нужно: платформе предъявляется удостоверение,
+# которое GitHub выдаёт этому конкретному запуску. Оно короткоживущее и
+# привязано к этому репозиторию — по нему платформа и понимает, в какой
+# образ разрешено писать.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGISTRY: registry.zerotomvp.xyz
+  AUDIENCE: zerotomvp
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Собрать образ
+        run: |
+          docker buildx build --load \
+            --cache-from "type=gha" --cache-to "type=gha,mode=max" \
+            -t "$REGISTRY/${{ github.event.repository.name }}:${{ github.sha }}" \
+            -t "$REGISTRY/${{ github.event.repository.name }}:latest" \
+            .
+
+      # Удостоверение берём после сборки: оно живёт минуты, и за время
+      # долгой сборки успело бы истечь.
+      - name: Опубликовать образ
+        run: |
+          set -euo pipefail
+          token=$(curl -sS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+
+          printf '%s' "$token" | docker login "$REGISTRY" -u oidc --password-stdin
+          docker push "$REGISTRY/${{ github.event.repository.name }}:${{ github.sha }}"
+          docker push "$REGISTRY/${{ github.event.repository.name }}:latest"
