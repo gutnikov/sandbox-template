@@ -1,9 +1,8 @@
 # Сборка и публикация образа сэндбокса.
 #
-# Секретов здесь нет и не нужно: платформе предъявляется удостоверение,
-# которое GitHub выдаёт этому конкретному запуску. Оно короткоживущее и
-# привязано к этому репозиторию — по нему платформа и понимает, в какой
-# образ разрешено писать.
+# Образ живёт в реестре пакетов этого же репозитория, то есть в вашем
+# аккаунте. Для публикации хватает удостоверения, которое GitHub выдаёт
+# самому запуску: отдельный токен реестра заводить не нужно.
 name: deploy
 
 on:
@@ -17,11 +16,7 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
-
-env:
-  REGISTRY: registry.zerotomvp.xyz
-  AUDIENCE: zerotomvp
+  packages: write
 
 jobs:
   deploy:
@@ -34,24 +29,51 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      - name: Собрать образ
-        run: |
-          docker buildx build --load \
-            --cache-from "type=gha" --cache-to "type=gha,mode=max" \
-            -t "$REGISTRY/${{ github.event.repository.name }}:${{ github.sha }}" \
-            -t "$REGISTRY/${{ github.event.repository.name }}:latest" \
-            .
+      - name: Войти в реестр пакетов
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Удостоверение берём после сборки: оно живёт минуты, и за время
-      # долгой сборки успело бы истечь.
-      - name: Опубликовать образ
+      # Имя образа в ghcr.io должно быть в нижнем регистре, а логин на
+      # GitHub — не обязательно.
+      - name: Определить имя образа
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Собрать и опубликовать образ
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Выкатывает платформа: у неё есть доступ к вашему хостингу, а у
+      # репозитория — только этот односторонний секрет, который платформа
+      # выдала и может отозвать.
+      - name: Попросить платформу выкатить образ
+        if: ${{ secrets.ZEROTOMVP_DEPLOY_SECRET != '' }}
+        env:
+          ENDPOINT: ${{ vars.ZEROTOMVP_DEPLOY_URL || 'https://zerotomvp.xyz/api/hooks/deploy' }}
+          SECRET: ${{ secrets.ZEROTOMVP_DEPLOY_SECRET }}
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          token=$(curl -sS \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          curl --silent --show-error --fail-with-body \
+            --max-time 30 --retry 3 --retry-connrefused \
+            -X POST "$ENDPOINT" \
+            -H "authorization: Bearer $SECRET" \
+            -H "content-type: application/json" \
+            -d "{\"image\":\"$IMAGE\",\"digest\":\"$DIGEST\",\"commit\":\"$COMMIT\"}"
 
-          printf '%s' "$token" | docker login "$REGISTRY" -u oidc --password-stdin
-          docker push "$REGISTRY/${{ github.event.repository.name }}:${{ github.sha }}"
-          docker push "$REGISTRY/${{ github.event.repository.name }}:latest"
+      - name: Сообщить, что хостинг ещё не подключён
+        if: ${{ secrets.ZEROTOMVP_DEPLOY_SECRET == '' }}
+        run: echo "::notice::Образ опубликован. Подключите хостинг в zerotomvp, чтобы его выкатить."
