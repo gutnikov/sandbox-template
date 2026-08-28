@@ -26,6 +26,9 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Сам шаблон — не сэндбокс: записи о нём в платформе нет, публиковать
+    # ему нечего. В порождённых репозиториях условие истинно.
+    if: github.event.repository.is_template == false
     steps:
       - uses: actions/checkout@v7
 
