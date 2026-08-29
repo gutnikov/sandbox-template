@@ -1,8 +1,8 @@
-# Сборка и публикация образа сэндбокса.
+# Проверка и выкат сэндбокса.
 #
-# Образ живёт в реестре пакетов этого же репозитория, то есть в вашем
-# аккаунте. Для публикации хватает удостоверения, которое GitHub выдаёт
-# самому запуску: отдельный токен реестра заводить не нужно.
+# Сборка проверяется здесь, в GitHub, а выкатывает сама сборка — токеном,
+# который платформа выдала на один-единственный проект Railway и может
+# отозвать. Доступа к остальному вашему хостингу у репозитория нет.
 name: deploy
 
 on:
@@ -16,68 +16,42 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Сам шаблон — не сэндбокс: выкатывать ему некуда.
+    if: github.event.repository.is_template == false
     # Секрет виден условиям только через env: контекст secrets в `if` не
     # разрешён, и workflow с ним даже не запускается.
     env:
-      DEPLOY_SECRET: ${{ secrets.ZEROTOMVP_DEPLOY_SECRET }}
-    # Сам шаблон — не сэндбокс: записи о нём в платформе нет, публиковать
-    # ему нечего. В порождённых репозиториях условие истинно.
-    if: github.event.repository.is_template == false
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
     steps:
       - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Войти в реестр пакетов
-        uses: docker/login-action@v4
+      - uses: actions/setup-node@v6
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          node-version: 22
 
-      # Имя образа в ghcr.io должно быть в нижнем регистре, а логин на
-      # GitHub — не обязательно.
-      - name: Определить имя образа
-        id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - name: Установить зависимости
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile || pnpm install
 
-      - name: Собрать и опубликовать образ
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ steps.image.outputs.name }}:${{ github.sha }}
-            ${{ steps.image.outputs.name }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # Ломается здесь — значит выкатывать нечего, и это видно за минуту.
+      - name: Собрать
+        run: pnpm build
 
-      # Выкатывает платформа: у неё есть доступ к вашему хостингу, а у
-      # репозитория — только этот односторонний секрет, который платформа
-      # выдала и может отозвать.
-      - name: Попросить платформу выкатить образ
-        if: env.DEPLOY_SECRET != ''
+      - name: Выкатить
+        if: env.RAILWAY_TOKEN != ''
         env:
-          ENDPOINT: ${{ vars.ZEROTOMVP_DEPLOY_URL || 'https://zerotomvp.xyz/api/hooks/deploy' }}
-          SECRET: ${{ secrets.ZEROTOMVP_DEPLOY_SECRET }}
-          IMAGE: ${{ steps.image.outputs.name }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-          COMMIT: ${{ github.sha }}
+          SERVICE: ${{ vars.RAILWAY_SERVICE }}
+          ENVIRONMENT: ${{ vars.RAILWAY_ENVIRONMENT || 'production' }}
         run: |
           set -euo pipefail
-          curl --silent --show-error --fail-with-body \
-            --max-time 30 --retry 3 --retry-connrefused \
-            -X POST "$ENDPOINT" \
-            -H "authorization: Bearer $SECRET" \
-            -H "content-type: application/json" \
-            -d "{\"image\":\"$IMAGE\",\"digest\":\"$DIGEST\",\"commit\":\"$COMMIT\"}"
+          npm install --global @railway/cli
+          railway up --service "$SERVICE" --environment "$ENVIRONMENT" --ci
 
       - name: Сообщить, что хостинг ещё не подключён
-        if: env.DEPLOY_SECRET == ''
-        run: echo "::notice::Образ опубликован. Подключите хостинг в zerotomvp, чтобы его выкатить."
+        if: env.RAILWAY_TOKEN == ''
+        run: echo "::notice::Сборка прошла. Подключите хостинг в zerotomvp, чтобы её выкатить."
