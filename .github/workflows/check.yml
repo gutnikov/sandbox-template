@@ -1,0 +1,39 @@
+# Проверка сборки.
+#
+# Выкатывает Railway: он подключён к этому репозиторию и собирает каждый
+# push сам. Здесь сборка проверяется заранее — чтобы сломанный коммит был
+# виден сразу, а не в логах хостинга.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Сам шаблон собирать незачем: у него нет ни хостинга, ни сэндбокса.
+    if: github.event.repository.is_template == false
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Установить зависимости
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile || pnpm install
+
+      - name: Собрать
+        run: pnpm build
