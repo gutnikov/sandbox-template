@@ -21,6 +21,10 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Секрет виден условиям только через env: контекст secrets в `if` не
+    # разрешён, и workflow с ним даже не запускается.
+    env:
+      DEPLOY_SECRET: ${{ secrets.ZEROTOMVP_DEPLOY_SECRET }}
     # Сам шаблон — не сэндбокс: записи о нём в платформе нет, публиковать
     # ему нечего. В порождённых репозиториях условие истинно.
     if: github.event.repository.is_template == false
@@ -58,7 +62,7 @@ jobs:
       # репозитория — только этот односторонний секрет, который платформа
       # выдала и может отозвать.
       - name: Попросить платформу выкатить образ
-        if: ${{ secrets.ZEROTOMVP_DEPLOY_SECRET != '' }}
+        if: env.DEPLOY_SECRET != ''
         env:
           ENDPOINT: ${{ vars.ZEROTOMVP_DEPLOY_URL || 'https://zerotomvp.xyz/api/hooks/deploy' }}
           SECRET: ${{ secrets.ZEROTOMVP_DEPLOY_SECRET }}
@@ -75,5 +79,5 @@ jobs:
             -d "{\"image\":\"$IMAGE\",\"digest\":\"$DIGEST\",\"commit\":\"$COMMIT\"}"
 
       - name: Сообщить, что хостинг ещё не подключён
-        if: ${{ secrets.ZEROTOMVP_DEPLOY_SECRET == '' }}
+        if: env.DEPLOY_SECRET == ''
         run: echo "::notice::Образ опубликован. Подключите хостинг в zerotomvp, чтобы его выкатить."
